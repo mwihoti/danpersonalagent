@@ -89,7 +89,7 @@ async function analyzeWithGemma(repoData, news) {
 }
 
 async function analyzeWithGemini(userMessage) {
-  const model = 'gemini-2.0-flash';
+  const model = 'gemini-2.5-flash';
   console.log(`  Sending to Gemini (${model})...`);
 
   // Gemini's OpenAI-compatible endpoint — same request format, no SDK needed
