@@ -89,4 +89,56 @@ ${news}
 Open Airtable for code skeletons + full details!`;
 }
 
-module.exports = { sendNotification, buildDigestMessage };
+// ─── Telegram command listener (long-polling) ────────────────────────────────
+// Calls getUpdates in a loop. When it sees /scan from the authorized chatId,
+// calls onScan(). Safe to run alongside the cron scheduler.
+
+async function listenForCommands(onScan) {
+  const { botToken, chatId } = config.telegram;
+  if (!botToken || !chatId) {
+    console.warn('Telegram bot not configured — command listener disabled');
+    return;
+  }
+
+  let offset = 0;
+  console.log(`Telegram bot listening for /scan in chat ${chatId}...`);
+  await sendTelegram('Bot started. Send /scan to trigger a scan, /status to check.');
+
+  while (true) {
+    try {
+      const url = `https://api.telegram.org/bot${botToken}/getUpdates?offset=${offset}&timeout=30&allowed_updates=["message"]`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(40_000) });
+      if (!res.ok) { await sleep(5000); continue; }
+
+      const { result } = await res.json();
+      for (const update of result) {
+        offset = update.update_id + 1;
+        const msg = update.message;
+        if (!msg || String(msg.chat.id) !== String(chatId)) continue;
+
+        const text = (msg.text || '').trim().toLowerCase();
+        if (text === '/scan' || text.startsWith('/scan ')) {
+          await sendTelegram('Got it — starting scan now...');
+          try {
+            await onScan();
+          } catch (e) {
+            await sendTelegram(`Scan failed: ${e.message}`);
+          }
+        } else if (text === '/status') {
+          await sendTelegram('Bot is running. Send /scan to trigger a scan.');
+        } else if (text === '/start' || text === '/help') {
+          await sendTelegram('Commands:\n/scan — run a scan now\n/status — check bot is alive');
+        }
+      }
+    } catch (e) {
+      if (e.name !== 'TimeoutError') console.warn('Poll error:', e.message);
+      await sleep(3000);
+    }
+  }
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+module.exports = { sendNotification, buildDigestMessage, listenForCommands };

@@ -49,10 +49,8 @@ function summarizeNews(news) {
   return items.slice(0, 25).join('\n');
 }
 
-// Use Groq (free, cloud) when GROQ_API_KEY is set.
-// Falls back to local Ollama otherwise (for laptop dev).
-async function analyzeWithGemma(repoData, news) {
-  const userMessage = `Today is ${new Date().toISOString().slice(0, 10)}.
+function buildUserMessage(repoData, news) {
+  return `Today is ${new Date().toISOString().slice(0, 10)}.
 
 === GITHUB SCAN (last 30 days + all good-first-issues) ===
 ${JSON.stringify(repoData, null, 2)}
@@ -63,40 +61,46 @@ ${summarizeNews(news)}
 Analyze the above data. Return a contest digest with UP TO 3 PR opportunities per repo.
 For each opportunity include a real code_skeleton — Clarity skeleton or JS/TS snippet the developer can immediately use.
 Focus on good-first-issue and bug-labeled issues first.`;
-
-  if (process.env.GROQ_API_KEY) {
-    return analyzeWithGroq(userMessage);
-  }
-  return analyzeWithOllama(userMessage);
 }
 
-async function analyzeWithGroq(userMessage) {
-  // Groq free tier: llama-3.3-70b-versatile is the best free model available.
-  // gemma2-9b-it is also available if you prefer Gemma.
-  const model = 'llama-3.3-70b-versatile';
-  console.log(`  Sending to Groq (${model})...`);
+// Use Gemini (free, 1M tokens/min) when GEMINI_API_KEY is set.
+// Falls back to local Ollama otherwise (for laptop dev).
+async function analyzeWithGemma(repoData, news) {
+  if (process.env.GEMINI_API_KEY) {
+    return analyzeWithGemini(buildUserMessage(repoData, news));
+  }
+  return analyzeWithOllama(buildUserMessage(repoData, news));
+}
 
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userMessage },
-      ],
-      temperature: 0.3,
-      max_tokens: 8192,
-    }),
-    signal: AbortSignal.timeout(120_000),
-  });
+async function analyzeWithGemini(userMessage) {
+  const model = 'gemini-2.0-flash';
+  console.log(`  Sending to Gemini (${model})...`);
+
+  // Gemini's OpenAI-compatible endpoint — same request format, no SDK needed
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.GEMINI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: userMessage },
+        ],
+        temperature: 0.3,
+        max_tokens: 8192,
+      }),
+      signal: AbortSignal.timeout(120_000),
+    }
+  );
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Groq error: ${res.status} ${err}`);
+    throw new Error(`Gemini error: ${res.status} ${err}`);
   }
 
   const data = await res.json();
