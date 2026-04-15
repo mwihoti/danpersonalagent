@@ -1,0 +1,25 @@
+{
+  "name": "danagent",
+  "version": "1.0.0",
+  "description": "Stacks Dev Assistant - Code, Commit, Earn contest helper powered by Gemma",
+  "main": "agent.js",
+  "scripts": {
+    "scan": "node agent.js --scan",
+    "start": "node agent.js --schedule",
+    "setup": "node scripts/setup-airtable.js"
+  },
+  "keywords": [
+    "stacks",
+    "clarity",
+    "gemma",
+    "ollama"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "airtable": "^0.12.2",
+    "dotenv": "^17.4.2",
+    "node-cron": "^4.2.1"
+  }
+}
