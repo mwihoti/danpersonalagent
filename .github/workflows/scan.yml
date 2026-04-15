@@ -26,7 +26,8 @@ jobs:
         run: node agent.js --scan
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # auto-provided by Actions
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}  # free at aistudio.google.com — replaces local Ollama
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}  # free at aistudio.google.com
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}      # fallback when all Gemini models are unavailable
           AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}

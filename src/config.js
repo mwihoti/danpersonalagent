@@ -13,6 +13,9 @@ module.exports = {
     repos: (process.env.GITHUB_REPOS || 'stacks-network/stacks-core,stacks-network/rendezvous,stx-labs/connect,stx-labs/clarinet,stx-labs/token-metadata-api')
       .split(',').map(r => r.trim()).filter(Boolean),
   },
+  groq: {
+    apiKey: process.env.GROQ_API_KEY || '',
+  },
   ollama: {
     baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
     model: process.env.OLLAMA_MODEL || 'gemma3:12b',

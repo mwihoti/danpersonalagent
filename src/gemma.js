@@ -79,44 +79,98 @@ function trimForCloud(repoData) {
   }));
 }
 
-// Use Gemini (free, 1M tokens/min) when GEMINI_API_KEY is set.
-// Falls back to local Ollama otherwise (for laptop dev).
+// Fallback chain (cloud): gemini-2.5-flash-lite → gemini-2.5-flash → Groq.
+// Falls back to local Ollama when no cloud keys are set.
 async function analyzeWithGemma(repoData, news) {
+  const userMessage = buildUserMessage(trimForCloud(repoData), news);
   if (process.env.GEMINI_API_KEY) {
-    return analyzeWithGemini(buildUserMessage(trimForCloud(repoData), news));
+    return analyzeWithGemini(userMessage);
+  }
+  if (process.env.GROQ_API_KEY) {
+    return analyzeWithGroq(userMessage);
   }
   return analyzeWithOllama(buildUserMessage(repoData, news));
 }
 
-async function analyzeWithGemini(userMessage) {
-  const model = 'gemini-2.5-flash';
-  console.log(`  Sending to Gemini (${model})...`);
+// Try each Gemini model in order; on 503 move to the next.
+// If all are unavailable, fall back to Groq (if key is set).
+const GEMINI_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
 
-  // Gemini's OpenAI-compatible endpoint — same request format, no SDK needed
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.GEMINI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: userMessage },
-        ],
-        temperature: 0.3,
-        max_tokens: 8192,
-      }),
-      signal: AbortSignal.timeout(120_000),
+async function analyzeWithGemini(userMessage) {
+  for (const model of GEMINI_MODELS) {
+    console.log(`  Sending to Gemini (${model})...`);
+
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.GEMINI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: userMessage },
+          ],
+          temperature: 0.3,
+          max_tokens: 8192,
+        }),
+        signal: AbortSignal.timeout(120_000),
+      }
+    );
+
+    if (res.ok) {
+      const data = await res.json();
+      const raw = data.choices?.[0]?.message?.content || '';
+      return parseJSON(raw);
     }
-  );
+
+    const errText = await res.text();
+
+    if (res.status === 503) {
+      console.warn(`  Gemini ${model} unavailable (503) — trying next...`);
+      continue;
+    }
+
+    throw new Error(`Gemini error: ${res.status} ${errText}`);
+  }
+
+  // All Gemini models returned 503 — try Groq
+  if (process.env.GROQ_API_KEY) {
+    console.warn('  All Gemini models unavailable — falling back to Groq...');
+    return analyzeWithGroq(userMessage);
+  }
+
+  throw new Error('All Gemini models unavailable and GROQ_API_KEY is not set');
+}
+
+async function analyzeWithGroq(userMessage) {
+  const model = 'llama-3.3-70b-versatile';
+  console.log(`  Sending to Groq (${model})...`);
+
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: userMessage },
+      ],
+      temperature: 0.3,
+      max_tokens: 8192,
+    }),
+    signal: AbortSignal.timeout(120_000),
+  });
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Gemini error: ${res.status} ${err}`);
+    throw new Error(`Groq error: ${res.status} ${err}`);
   }
 
   const data = await res.json();
