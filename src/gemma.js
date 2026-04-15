@@ -49,6 +49,8 @@ function summarizeNews(news) {
   return items.slice(0, 25).join('\n');
 }
 
+// Use Groq (free, cloud) when GROQ_API_KEY is set.
+// Falls back to local Ollama otherwise (for laptop dev).
 async function analyzeWithGemma(repoData, news) {
   const userMessage = `Today is ${new Date().toISOString().slice(0, 10)}.
 
@@ -62,6 +64,47 @@ Analyze the above data. Return a contest digest with UP TO 3 PR opportunities pe
 For each opportunity include a real code_skeleton — Clarity skeleton or JS/TS snippet the developer can immediately use.
 Focus on good-first-issue and bug-labeled issues first.`;
 
+  if (process.env.GROQ_API_KEY) {
+    return analyzeWithGroq(userMessage);
+  }
+  return analyzeWithOllama(userMessage);
+}
+
+async function analyzeWithGroq(userMessage) {
+  // Groq free tier: llama-3.3-70b-versatile is the best free model available.
+  // gemma2-9b-it is also available if you prefer Gemma.
+  const model = 'llama-3.3-70b-versatile';
+  console.log(`  Sending to Groq (${model})...`);
+
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: userMessage },
+      ],
+      temperature: 0.3,
+      max_tokens: 8192,
+    }),
+    signal: AbortSignal.timeout(120_000),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Groq error: ${res.status} ${err}`);
+  }
+
+  const data = await res.json();
+  const raw = data.choices?.[0]?.message?.content || '';
+  return parseJSON(raw);
+}
+
+async function analyzeWithOllama(userMessage) {
   const body = {
     model: config.ollama.model,
     messages: [
@@ -75,12 +118,12 @@ Focus on good-first-issue and bug-labeled issues first.`;
     },
   };
 
-  console.log(`  Sending to ${config.ollama.model}...`);
+  console.log(`  Sending to Ollama (${config.ollama.model})...`);
   const res = await fetch(`${config.ollama.baseUrl}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(300_000), // 5 min — larger output now
+    signal: AbortSignal.timeout(300_000),
   });
 
   if (!res.ok) {
@@ -89,13 +132,16 @@ Focus on good-first-issue and bug-labeled issues first.`;
 
   const data = await res.json();
   const raw = data.message?.content || '';
-  const cleaned = raw.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim();
+  return parseJSON(raw);
+}
 
+function parseJSON(raw) {
+  const cleaned = raw.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim();
   try {
     return JSON.parse(cleaned);
   } catch (e) {
-    console.error('Gemma returned non-JSON:', cleaned.slice(0, 400));
-    throw new Error('Failed to parse Gemma JSON response');
+    console.error('Model returned non-JSON:', cleaned.slice(0, 400));
+    throw new Error('Failed to parse model JSON response');
   }
 }
 
