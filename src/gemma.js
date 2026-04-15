@@ -63,11 +63,27 @@ For each opportunity include a real code_skeleton — Clarity skeleton or JS/TS 
 Focus on good-first-issue and bug-labeled issues first.`;
 }
 
+// Trim repo data before sending to cloud APIs — keeps top 6 issues per repo
+// (already sorted: good-first + bugs first), truncates bodies, drops recentPRs.
+function trimForCloud(repoData) {
+  return repoData.map(r => ({
+    repo: r.repo,
+    repoUrl: r.repoUrl,
+    issues: r.issues.slice(0, 6).map(i => ({
+      number: i.number,
+      title: i.title,
+      body: (i.body || '').slice(0, 200),
+      labels: i.labels,
+      url: i.url,
+    })),
+  }));
+}
+
 // Use Gemini (free, 1M tokens/min) when GEMINI_API_KEY is set.
 // Falls back to local Ollama otherwise (for laptop dev).
 async function analyzeWithGemma(repoData, news) {
   if (process.env.GEMINI_API_KEY) {
-    return analyzeWithGemini(buildUserMessage(repoData, news));
+    return analyzeWithGemini(buildUserMessage(trimForCloud(repoData), news));
   }
   return analyzeWithOllama(buildUserMessage(repoData, news));
 }
