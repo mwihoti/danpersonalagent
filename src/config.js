@@ -22,6 +22,7 @@ module.exports = {
     apiKey: process.env.AIRTABLE_API_KEY || '',
     baseId: process.env.AIRTABLE_BASE_ID || '',
     tableName: process.env.AIRTABLE_TABLE_NAME || 'Contest Opportunities',
+    subscribersTable: process.env.AIRTABLE_SUBSCRIBERS_TABLE || 'Subscribers',
   },
   whatsapp: {
     phone: process.env.WHATSAPP_PHONE || '',

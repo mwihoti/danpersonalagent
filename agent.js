@@ -17,7 +17,13 @@ async function run(options = {}) {
 const arg = process.argv[2];
 
 if (!arg || arg === '--scan') {
-  run().then(() => {
+  // SCAN_MODE / SCAN_DEDUPE / SCAN_TRIGGER let CI (see
+  // .github/workflows/telegram-scan.yml) run a specific scan without new flags.
+  run({
+    scanMode: process.env.SCAN_MODE || 'default',
+    dedupe: process.env.SCAN_DEDUPE !== 'false',
+    ...(process.env.SCAN_TRIGGER ? { trigger: process.env.SCAN_TRIGGER } : {}),
+  }).then(() => {
     if (!arg) process.exit(0);
   });
 } else if (arg === '--schedule') {

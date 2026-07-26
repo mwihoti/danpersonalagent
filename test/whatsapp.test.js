@@ -110,8 +110,10 @@ test("Telegram subscribers can opt in and out", async () => {
   try {
     const whatsappPath = require.resolve("../src/whatsapp");
     const configPath = require.resolve("../src/config");
+    const subscribersPath = require.resolve("../src/subscribers");
     delete require.cache[whatsappPath];
     delete require.cache[configPath];
+    delete require.cache[subscribersPath];
     const fresh = require("../src/whatsapp");
 
     await fresh.subscribeTelegramChat({

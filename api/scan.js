@@ -33,8 +33,17 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const trigger = isVercelCron ? 'vercel-cron' : (req.method === 'POST' ? 'manual-api' : 'cron');
-    const result = await runScan({ trigger });
+    const url = new URL(req.url, 'http://localhost');
+    const scanMode = url.searchParams.get('scanMode') || 'default';
+    // Interactive scans (a specific mode) default to no dedupe so the requester
+    // always gets a digest back; the daily cron keeps dedupe on.
+    const dedupeParam = url.searchParams.get('dedupe');
+    const dedupe = dedupeParam !== null
+      ? dedupeParam !== 'false'
+      : scanMode === 'default';
+    const baseTrigger = isVercelCron ? 'vercel-cron' : (req.method === 'POST' ? 'manual-api' : 'cron');
+    const trigger = scanMode === 'default' ? baseTrigger : `${baseTrigger}-${scanMode}`;
+    const result = await runScan({ trigger, scanMode, dedupe });
     return sendJson(res, 200, {
       ok: true,
       digest: result.digest,

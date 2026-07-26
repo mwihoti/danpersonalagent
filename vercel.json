@@ -1,4 +1,12 @@
 {
+  "functions": {
+    "api/scan.js": {
+      "maxDuration": 60
+    },
+    "api/telegram.js": {
+      "maxDuration": 30
+    }
+  },
   "crons": [
     {
       "path": "/api/scan",

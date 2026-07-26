@@ -7,6 +7,8 @@
     "scan": "node agent.js --scan",
     "start": "node agent.js --schedule",
     "setup": "node scripts/setup-airtable.js",
+    "bot": "node agent.js --bot",
+    "set-webhook": "node scripts/set-webhook.js",
     "dev": "node dev-server.js",
     "test": "node --test"
   },
@@ -20,6 +22,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@vercel/functions": "^3.7.6",
     "airtable": "^0.12.2",
     "dotenv": "^17.4.2",
     "node-cron": "^4.2.1"

@@ -1,15 +1,10 @@
 "use strict";
-const fs = require("fs/promises");
-const path = require("path");
 const config = require("./config");
-
-const LOCAL_DATA_DIR =
-  process.env.DAN_AGENT_DATA_DIR ||
-  (process.env.VERCEL
-    ? path.join("/tmp", "danagent-data")
-    : path.join(__dirname, "..", "data"));
-const SUBSCRIBERS_FILE = path.join(LOCAL_DATA_DIR, "telegram-subscribers.json");
-let subscriberWriteQueue = Promise.resolve();
+const {
+  readSubscribers,
+  upsertSubscriber,
+  removeSubscriber,
+} = require("./subscribers");
 
 // ─── WhatsApp via CallMeBot ───────────────────────────────────────────────────
 
@@ -33,36 +28,6 @@ async function sendWhatsApp(message) {
 }
 
 // ─── Telegram ─────────────────────────────────────────────────────────────────
-
-async function ensureSubscriberStore() {
-  await fs.mkdir(LOCAL_DATA_DIR, { recursive: true });
-  try {
-    await fs.access(SUBSCRIBERS_FILE);
-  } catch {
-    await fs.writeFile(SUBSCRIBERS_FILE, "[]\n", "utf8");
-  }
-}
-
-async function readSubscribers() {
-  await ensureSubscriberStore();
-  const raw = await fs.readFile(SUBSCRIBERS_FILE, "utf8");
-  return JSON.parse(raw);
-}
-
-async function writeSubscribers(subscribers) {
-  await ensureSubscriberStore();
-  await fs.writeFile(
-    SUBSCRIBERS_FILE,
-    `${JSON.stringify(subscribers, null, 2)}\n`,
-    "utf8",
-  );
-}
-
-function serializeSubscriberWrite(task) {
-  const next = subscriberWriteQueue.then(task, task);
-  subscriberWriteQueue = next.catch(() => {});
-  return next;
-}
 
 function normalizeChatId(chatId) {
   return String(chatId || "").trim();
@@ -135,47 +100,18 @@ async function subscribeTelegramChat(chat) {
   const chatId = normalizeChatId(chat && chat.id);
   if (!chatId) throw new Error("Cannot subscribe Telegram chat without an id");
 
-  return serializeSubscriberWrite(async () => {
-    const subscribers = await readSubscribers();
-    const existing = subscribers.find(
-      (item) => normalizeChatId(item.chatId) === chatId,
-    );
-    const record = {
-      chatId,
-      type: chat.type || "",
-      title: chat.title || "",
-      username: chat.username || "",
-      firstName: chat.first_name || "",
-      lastName: chat.last_name || "",
-      subscribedAt: existing?.subscribedAt || new Date().toISOString(),
-      lastSeenAt: new Date().toISOString(),
-    };
-
-    const next = existing
-      ? subscribers.map((item) =>
-          normalizeChatId(item.chatId) === chatId
-            ? { ...item, ...record }
-            : item,
-        )
-      : [...subscribers, record];
-
-    await writeSubscribers(next);
-    return record;
+  return upsertSubscriber({
+    chatId,
+    type: chat.type || "",
+    title: chat.title || "",
+    username: chat.username || "",
+    firstName: chat.first_name || "",
+    lastName: chat.last_name || "",
   });
 }
 
 async function unsubscribeTelegramChat(chatId) {
-  const normalized = normalizeChatId(chatId);
-  if (!normalized) return false;
-
-  return serializeSubscriberWrite(async () => {
-    const subscribers = await readSubscribers();
-    const next = subscribers.filter(
-      (item) => normalizeChatId(item.chatId) !== normalized,
-    );
-    await writeSubscribers(next);
-    return next.length !== subscribers.length;
-  });
+  return removeSubscriber(chatId);
 }
 
 async function sendTelegramToChat(chatId, message) {
@@ -416,6 +352,74 @@ function buildDigestMessages(digest) {
 // Calls getUpdates in a loop. When it sees /scan from the authorized chatId,
 // calls onScan(). Safe to run alongside the cron scheduler.
 
+// Processes a single Telegram update (one message). Shared by the long-polling
+// listener (listenForCommands) and the serverless webhook (api/telegram.js) so
+// both modes behave identically. onScan is invoked for /scan commands.
+async function handleTelegramUpdate(update, onScan) {
+  const msg = update && update.message;
+  if (!msg || !msg.chat) return;
+
+  const command = normalizeCommand(msg.text);
+  const chatId = normalizeChatId(msg.chat.id);
+
+  if (command === "start" || command === "subscribe") {
+    await subscribeTelegramChat(msg.chat);
+    await sendTelegramToChat(
+      chatId,
+      "You are subscribed. You will receive the daily Repository Intelligence Digest here. Send /stop to unsubscribe.\n\nScan commands:\n/scan - top prioritized issues\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues",
+    );
+  } else if (command === "stop" || command === "unsubscribe") {
+    await unsubscribeTelegramChat(chatId);
+    await sendTelegramToChat(
+      chatId,
+      "You are unsubscribed. Send /start any time to subscribe again.",
+    );
+  } else if (command === "scan") {
+    if (!(await isSubscriber(chatId))) {
+      await sendTelegramToChat(
+        chatId,
+        "You need to be subscribed to trigger scans. Send /start to subscribe first.",
+      );
+      return;
+    }
+    const scanMode = parseScanMode(msg.text);
+    await sendTelegramToChat(
+      chatId,
+      `Got it — starting ${scanModeLabel(scanMode)} scan now...`,
+    );
+    try {
+      // chatId lets serverless callers report back to the requester; runScan
+      // ignores the extra key, so long-polling mode is unaffected.
+      const result = await onScan({
+        trigger: `telegram-${scanMode}`,
+        scanMode,
+        dedupe: false,
+        chatId,
+      });
+      // Serverless callers hand the scan off elsewhere and return a status note.
+      if (result && result.message) {
+        await sendTelegramToChat(chatId, result.message);
+      }
+    } catch (e) {
+      await sendTelegramToChat(chatId, `Scan failed: ${e.message}`);
+    }
+  } else if (command === "status") {
+    await sendTelegramToChat(
+      chatId,
+      (await isSubscriber(chatId))
+        ? "Bot is running. Send /scan to trigger a scan, or /stop to unsubscribe from digests."
+        : "Bot is running. You will receive daily updates if subscribed. Send /start to subscribe or /stop to unsubscribe.",
+    );
+  } else if (command === "help") {
+    await sendTelegramToChat(
+      chatId,
+      (await isSubscriber(chatId))
+        ? "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/scan - top prioritized issues\n/scan all - broad open-issue scan\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues"
+        : "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot",
+    );
+  }
+}
+
 async function listenForCommands(onScan) {
   const { botToken } = config.telegram;
   if (!botToken) {
@@ -450,59 +454,10 @@ async function listenForCommands(onScan) {
       const { result } = await res.json();
       for (const update of result) {
         offset = update.update_id + 1;
-        const msg = update.message;
-        if (!msg || !msg.chat) continue;
-
-        const command = normalizeCommand(msg.text);
-        const chatId = normalizeChatId(msg.chat.id);
-        if (command === "start" || command === "subscribe") {
-          await subscribeTelegramChat(msg.chat);
-          await sendTelegramToChat(
-            chatId,
-            "You are subscribed. You will receive the daily Repository Intelligence Digest here. Send /stop to unsubscribe.\n\nScan commands:\n/scan - top prioritized issues\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues",
-          );
-        } else if (command === "stop" || command === "unsubscribe") {
-          await unsubscribeTelegramChat(chatId);
-          await sendTelegramToChat(
-            chatId,
-            "You are unsubscribed. Send /start any time to subscribe again.",
-          );
-        } else if (command === "scan") {
-          if (!(await isSubscriber(chatId))) {
-            await sendTelegramToChat(
-              chatId,
-              "You need to be subscribed to trigger scans. Send /start to subscribe first.",
-            );
-            continue;
-          }
-          const scanMode = parseScanMode(msg.text);
-          await sendTelegramToChat(
-            chatId,
-            `Got it — starting ${scanModeLabel(scanMode)} scan now...`,
-          );
-          try {
-            await onScan({
-              trigger: `telegram-${scanMode}`,
-              scanMode,
-              dedupe: false,
-            });
-          } catch (e) {
-            await sendTelegramToChat(chatId, `Scan failed: ${e.message}`);
-          }
-        } else if (command === "status") {
-          await sendTelegramToChat(
-            chatId,
-            (await isSubscriber(chatId))
-              ? "Bot is running. Send /scan to trigger a scan, or /stop to unsubscribe from digests."
-              : "Bot is running. You will receive daily updates if subscribed. Send /start to subscribe or /stop to unsubscribe.",
-          );
-        } else if (command === "help") {
-          await sendTelegramToChat(
-            chatId,
-            (await isSubscriber(chatId))
-              ? "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/scan - top prioritized issues\n/scan all - broad open-issue scan\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues"
-              : "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot",
-          );
+        try {
+          await handleTelegramUpdate(update, onScan);
+        } catch (e) {
+          console.warn("Update handler error:", e.message);
         }
       }
     } catch (e) {
@@ -521,6 +476,7 @@ module.exports = {
   buildDigestMessage,
   buildDigestMessages,
   listenForCommands,
+  handleTelegramUpdate,
   listTelegramSubscribers,
   subscribeTelegramChat,
   unsubscribeTelegramChat,

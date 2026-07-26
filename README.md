@@ -92,6 +92,22 @@ If your network can't reach the Airtable API, create these fields manually in th
 | Issue URL | URL |
 | Code Skeleton | Long text |
 
+<a name="subscribers-table"></a>
+#### Subscribers table
+
+For durable Telegram subscriptions (required in webhook/serverless mode), create a second table named `Subscribers` (override with `AIRTABLE_SUBSCRIBERS_TABLE`):
+
+| Field name | Type |
+|---|---|
+| ChatId | Single line text |
+| Type | Single line text |
+| Title | Single line text |
+| Username | Single line text |
+| First Name | Single line text |
+| Last Name | Single line text |
+| Subscribed At | Single line text |
+| Last Seen At | Single line text |
+
 ### 4. Log in to Ollama
 
 ```bash
@@ -137,7 +153,62 @@ Bot mode runs the daily scheduler and listens for Telegram commands:
 
 Set `TELEGRAM_BOT_TOKEN` to make the bot public. Set `TELEGRAM_CHAT_ID` to your admin chat id if you want `/scan` to be available only to you.
 
-Subscribed chats are stored in `data/telegram-subscribers.json` locally, or under `/tmp/danagent-data` on Vercel. For production public subscriptions, run bot mode on a persistent worker such as Railway, Render, or a VPS, or set `DAN_AGENT_DATA_DIR` to durable storage.
+Subscribed chats are stored in **Airtable** when `AIRTABLE_API_KEY` + `AIRTABLE_BASE_ID` are set (durable, works on serverless), and fall back to a local JSON file (`data/telegram-subscribers.json`, or `/tmp/danagent-data` on Vercel) for local development. See [Subscribers table](#subscribers-table) for the schema.
+
+### 8. Run the bot on Vercel with webhooks (free, always responds)
+
+Long-polling (`--bot`) needs a process running 24/7. On free serverless hosts that scale to zero (Vercel, and fly.io's auto-stop machines), that process dies and the bot goes silent. **Webhook mode** avoids this: Telegram pushes each message to `/api/telegram`, so the bot wakes on demand and responds instantly — no always-on worker, no cost.
+
+The daily digest still runs via the Vercel cron already defined in `vercel.json` (`/api/scan`).
+
+1. Deploy to Vercel and set the env vars (`TELEGRAM_BOT_TOKEN`, `AIRTABLE_*`, `TELEGRAM_WEBHOOK_SECRET`, `GITHUB_DISPATCH_REPO`, `GITHUB_DISPATCH_TOKEN`, plus `CRON_SECRET` if you keep the Vercel cron).
+2. Create the [Subscribers table](#subscribers-table) in Airtable so subscriptions survive cold starts.
+3. Register the webhook once:
+
+   ```bash
+   PUBLIC_BASE_URL=https://your-app.vercel.app \
+   TELEGRAM_WEBHOOK_SECRET=your_secret \
+   npm run set-webhook
+   ```
+
+   Or pass the URL directly: `node scripts/set-webhook.js https://your-app.vercel.app`
+
+   Useful flags: `node scripts/set-webhook.js --info` (status), `--delete` (revert to polling).
+
+#### How `/scan` avoids the serverless timeout
+
+A full scan (GitHub + news + LLM) routinely runs longer than a serverless
+function is allowed to live. So the webhook **never runs the scan itself** —
+it hands the job to GitHub Actions and returns in milliseconds:
+
+```
+Telegram → /api/telegram (ms)  ──repository_dispatch──→  GitHub Actions
+                                                          (6-hour budget)
+                                                                │
+                                       digest → all subscribers ┘
+```
+
+Every command path is now fast, so nothing can time out:
+
+| Command | Runs where | Response |
+|---|---|---|
+| `/start` `/stop` `/status` `/help` | webhook | instant |
+| `/scan …` | queued to GitHub Actions | instant ack, digest when the run finishes |
+
+To enable it, set `GITHUB_DISPATCH_REPO` (`owner/repo`) and
+`GITHUB_DISPATCH_TOKEN` (a PAT with `contents: write`, **separate** from the
+read-only scan token). The receiving workflow is
+`.github/workflows/telegram-scan.yml`; you can also run it by hand from the
+Actions tab. If the run fails, the requester gets a message with a link to it.
+
+If dispatch is not configured, the webhook falls back to running the scan in the
+background — fine for quick scans, but it can be cut short by `maxDuration`,
+which is exactly why dispatch is recommended.
+
+**Considering Cloudflare Workers instead?** See
+[`deploy/cloudflare.md`](deploy/cloudflare.md) for an honest comparison and a
+step-by-step migration plan. Summary: with scans on GitHub Actions, the host
+only serves a thin webhook, so Vercel is already sufficient.
 
 ---
 
@@ -194,6 +265,8 @@ If `DAN_AGENT_API_KEY` is set, the dashboard prompts for it once and sends it on
 |---|---|
 | `npm run scan` | Run a single scan immediately |
 | `npm start` | Start the cron scheduler (runs daily at 8am) |
+| `npm run bot` | Run the long-polling bot + scheduler (persistent worker) |
+| `npm run set-webhook` | Register the Telegram webhook (serverless mode) |
 | `npm run setup` | Create all Airtable fields (run once) |
 
 ---
