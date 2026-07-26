@@ -4,6 +4,7 @@
 //
 //   node scripts/set-webhook.js                       → register using PUBLIC_BASE_URL
 //   node scripts/set-webhook.js https://app.vercel.app → register using an explicit URL
+//   node scripts/set-webhook.js --keep-pending        → also deliver the queued backlog
 //   node scripts/set-webhook.js --delete              → remove the webhook (back to polling)
 //   node scripts/set-webhook.js --info                → show current webhook status
 const { setTelegramCommands } = require('../src/whatsapp');
@@ -52,7 +53,13 @@ async function main() {
     return;
   }
 
-  const baseUrl = (arg || process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+  // By default the queued backlog is dropped, so stale commands (a /scan from
+  // two days ago) don't all fire the moment the bot goes live. --keep-pending
+  // delivers it instead, which is how you rescue people who messaged the bot
+  // while it was down — Telegram keeps undelivered updates for about 24 hours.
+  const keepPending = process.argv.includes('--keep-pending');
+  const urlArg = process.argv.slice(2).find((value) => !value.startsWith('--'));
+  const baseUrl = (urlArg || process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
   if (!baseUrl) {
     console.error('Provide the deployment URL as an argument or set PUBLIC_BASE_URL.');
     console.error('  node scripts/set-webhook.js https://your-app.vercel.app');
@@ -72,7 +79,7 @@ async function main() {
       url: webhookUrl,
       secret_token: secret || undefined,
       allowed_updates: ['message'],
-      drop_pending_updates: true,
+      drop_pending_updates: !keepPending,
     });
 
     const label = await describe(bot);
