@@ -17,6 +17,7 @@
 //   GITHUB_DISPATCH_TOKEN     PAT with contents:write
 const { handleTelegramUpdate } = require('../src/whatsapp');
 const { isDispatchConfigured, dispatchScan } = require('../src/scan-dispatch');
+const { resolveBot } = require('../src/bots');
 const { allowOptions, readJsonBody, sendJson } = require('../src/http');
 
 // Vercel freezes the sandbox once the response is sent; waitUntil keeps
@@ -87,6 +88,17 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Each bot registers its own webhook URL (…/api/telegram?bot=<botId>), which
+  // is how one deployment can serve several bots and still reply through the
+  // right one. No ?bot= means the primary bot, so single-bot setups are
+  // unaffected.
+  const url = new URL(req.url, 'http://localhost');
+  const bot = resolveBot(url.searchParams.get('bot'));
+  if (!bot) {
+    console.error(`Telegram webhook: unknown bot "${url.searchParams.get('bot')}"`);
+    return sendJson(res, 200, { ok: true });
+  }
+
   let update;
   try {
     update = await readJsonBody(req);
@@ -96,7 +108,7 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    await handleTelegramUpdate(update, triggerScan);
+    await handleTelegramUpdate(update, triggerScan, bot);
   } catch (e) {
     // Never turn an error into a non-200: Telegram would retry the update and
     // the user would get duplicate replies. Log and acknowledge instead.

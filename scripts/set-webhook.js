@@ -6,21 +6,26 @@
 //   node scripts/set-webhook.js https://app.vercel.app → register using an explicit URL
 //   node scripts/set-webhook.js --delete              → remove the webhook (back to polling)
 //   node scripts/set-webhook.js --info                → show current webhook status
-const config = require('../src/config');
 const { setTelegramCommands } = require('../src/whatsapp');
+const { listBots } = require('../src/bots');
 
-const botToken = config.telegram.botToken;
+const bots = listBots();
 
-function api(method, body) {
-  return fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
+function api(token, method, body) {
+  return fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   }).then((res) => res.json());
 }
 
+async function describe(bot) {
+  const me = await api(bot.token, 'getMe');
+  return me.ok && me.result ? `@${me.result.username}` : `bot ${bot.botId}`;
+}
+
 async function main() {
-  if (!botToken) {
+  if (!bots.length) {
     console.error('TELEGRAM_BOT_TOKEN is not set.');
     process.exit(1);
   }
@@ -28,13 +33,22 @@ async function main() {
   const arg = process.argv[2];
 
   if (arg === '--info') {
-    console.log(JSON.stringify(await api('getWebhookInfo'), null, 2));
+    for (const bot of bots) {
+      const info = await api(bot.token, 'getWebhookInfo');
+      console.log(`\n=== ${await describe(bot)} (botId ${bot.botId}) ===`);
+      console.log(JSON.stringify(info.result || info, null, 2));
+    }
     return;
   }
 
   if (arg === '--delete') {
-    const result = await api('deleteWebhook', { drop_pending_updates: false });
-    console.log(result.ok ? 'Webhook removed. You can use long-polling (node agent.js --bot).' : result);
+    for (const bot of bots) {
+      const result = await api(bot.token, 'deleteWebhook', { drop_pending_updates: false });
+      console.log(
+        `${await describe(bot)}: ${result.ok ? 'webhook removed' : JSON.stringify(result)}`,
+      );
+    }
+    console.log('\nYou can now use long-polling (node agent.js --bot).');
     return;
   }
 
@@ -50,22 +64,30 @@ async function main() {
     console.warn('Warning: TELEGRAM_WEBHOOK_SECRET is not set — the endpoint will accept unsigned requests.');
   }
 
-  const webhookUrl = `${baseUrl}/api/telegram`;
-  const result = await api('setWebhook', {
-    url: webhookUrl,
-    secret_token: secret || undefined,
-    allowed_updates: ['message'],
-    drop_pending_updates: true,
-  });
+  // Every bot gets its own URL so the webhook knows which one to reply through.
+  let failed = false;
+  for (const bot of bots) {
+    const webhookUrl = `${baseUrl}/api/telegram?bot=${bot.botId}`;
+    const result = await api(bot.token, 'setWebhook', {
+      url: webhookUrl,
+      secret_token: secret || undefined,
+      allowed_updates: ['message'],
+      drop_pending_updates: true,
+    });
 
-  if (!result.ok) {
-    console.error('Failed to set webhook:', result);
-    process.exit(1);
+    const label = await describe(bot);
+    if (!result.ok) {
+      console.error(`${label}: failed to set webhook —`, result.description || result);
+      failed = true;
+      continue;
+    }
+
+    await setTelegramCommands(bot.token);
+    console.log(`${label} → ${webhookUrl}`);
   }
 
-  await setTelegramCommands();
-  console.log(`Webhook set to ${webhookUrl}`);
-  console.log('Command menu registered. Send /start to the bot to test.');
+  if (failed) process.exit(1);
+  console.log('\nCommand menus registered. Send /start to each bot to test.');
 }
 
 main().catch((err) => {

@@ -19,21 +19,38 @@ function mockRes() {
   };
 }
 
+const BOT_A = '111111:AAAA';   // botId 111111
+const BOT_B = '222222:BBBB';   // botId 222222
+
 async function withHandler(fn) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'danagent-webhook-'));
-  const prevDataDir = process.env.DAN_AGENT_DATA_DIR;
-  const prevSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  const saved = {};
+  for (const key of [
+    'DAN_AGENT_DATA_DIR',
+    'TELEGRAM_WEBHOOK_SECRET',
+    'TELEGRAM_BOT_TOKEN',
+  ]) {
+    saved[key] = process.env[key];
+  }
   const prevFetch = global.fetch;
 
   process.env.DAN_AGENT_DATA_DIR = dir;
   process.env.TELEGRAM_WEBHOOK_SECRET = 'topsecret';
+  if (!process.env.TELEGRAM_BOT_TOKEN) process.env.TELEGRAM_BOT_TOKEN = BOT_A;
+
   const calls = [];
   global.fetch = async (url, opts) => {
     calls.push({ url: String(url), opts });
     return { ok: true, status: 200, json: async () => ({ ok: true }) };
   };
 
-  for (const mod of ['../src/config', '../src/subscribers', '../src/whatsapp', '../api/telegram']) {
+  for (const mod of [
+    '../src/config',
+    '../src/bots',
+    '../src/subscribers',
+    '../src/whatsapp',
+    '../api/telegram',
+  ]) {
     delete require.cache[require.resolve(mod)];
   }
   const handler = require('../api/telegram');
@@ -42,10 +59,10 @@ async function withHandler(fn) {
     await fn(handler, calls);
   } finally {
     global.fetch = prevFetch;
-    if (prevDataDir === undefined) delete process.env.DAN_AGENT_DATA_DIR;
-    else process.env.DAN_AGENT_DATA_DIR = prevDataDir;
-    if (prevSecret === undefined) delete process.env.TELEGRAM_WEBHOOK_SECRET;
-    else process.env.TELEGRAM_WEBHOOK_SECRET = prevSecret;
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     await fs.rm(dir, { recursive: true, force: true });
   }
 }
@@ -128,5 +145,78 @@ test('/scan is handed to GitHub Actions instead of running in the request', asyn
     else process.env.GITHUB_DISPATCH_TOKEN = prevToken;
     if (prevChatId === undefined) delete process.env.TELEGRAM_CHAT_ID;
     else process.env.TELEGRAM_CHAT_ID = prevChatId;
+  }
+});
+
+test('each bot replies through its own token', async () => {
+  const prevToken2 = process.env.TELEGRAM_BOT_TOKEN_2;
+  process.env.TELEGRAM_BOT_TOKEN_2 = BOT_B;
+
+  try {
+    await withHandler(async (handler, calls) => {
+      const send = (botParam) =>
+        handler(
+          {
+            method: 'POST',
+            url: `/api/telegram?bot=${botParam}`,
+            headers: { 'x-telegram-bot-api-secret-token': 'topsecret' },
+            body: {
+              message: { chat: { id: 7, type: 'private' }, text: '/status' },
+            },
+          },
+          mockRes(),
+        );
+
+      await send('222222');
+      const viaB = calls.filter((c) => c.url.includes(`/bot${BOT_B}/sendMessage`));
+      assert.equal(viaB.length, 1, 'bot B should answer with bot B token');
+      assert.equal(
+        calls.filter((c) => c.url.includes(`/bot${BOT_A}/sendMessage`)).length,
+        0,
+        'bot A must not answer a message sent to bot B',
+      );
+
+      calls.length = 0;
+      await send('111111');
+      assert.equal(
+        calls.filter((c) => c.url.includes(`/bot${BOT_A}/sendMessage`)).length,
+        1,
+        'bot A should answer with bot A token',
+      );
+    });
+  } finally {
+    if (prevToken2 === undefined) delete process.env.TELEGRAM_BOT_TOKEN_2;
+    else process.env.TELEGRAM_BOT_TOKEN_2 = prevToken2;
+  }
+});
+
+test('subscriptions are scoped per bot', async () => {
+  const prevToken2 = process.env.TELEGRAM_BOT_TOKEN_2;
+  process.env.TELEGRAM_BOT_TOKEN_2 = BOT_B;
+
+  try {
+    await withHandler(async (handler) => {
+      // Subscribe chat 9 to bot B only.
+      await handler(
+        {
+          method: 'POST',
+          url: '/api/telegram?bot=222222',
+          headers: { 'x-telegram-bot-api-secret-token': 'topsecret' },
+          body: { message: { chat: { id: 9, type: 'private' }, text: '/start' } },
+        },
+        mockRes(),
+      );
+
+      const { readSubscribers } = require('../src/subscribers');
+      const onB = await readSubscribers('222222');
+      const onA = await readSubscribers('111111');
+
+      assert.equal(onB.length, 1, 'bot B should have the subscriber');
+      assert.equal(onB[0].chatId, '9');
+      assert.equal(onA.length, 0, 'bot A must not inherit bot B subscribers');
+    });
+  } finally {
+    if (prevToken2 === undefined) delete process.env.TELEGRAM_BOT_TOKEN_2;
+    else process.env.TELEGRAM_BOT_TOKEN_2 = prevToken2;
   }
 });

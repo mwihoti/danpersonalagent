@@ -100,6 +100,7 @@ For durable Telegram subscriptions (required in webhook/serverless mode), create
 | Field name | Type |
 |---|---|
 | ChatId | Single line text |
+| BotId | Single line text |
 | Type | Single line text |
 | Title | Single line text |
 | Username | Single line text |
@@ -204,6 +205,35 @@ Actions tab. If the run fails, the requester gets a message with a link to it.
 If dispatch is not configured, the webhook falls back to running the scan in the
 background — fine for quick scans, but it can be cut short by `maxDuration`,
 which is exactly why dispatch is recommended.
+
+#### Running two bots from one deployment
+
+Set a second token and both bots answer, each with its own audience:
+
+```env
+TELEGRAM_BOT_TOKEN=111111:AAA…      # primary
+TELEGRAM_BOT_TOKEN_2=222222:BBB…    # second bot
+```
+
+`npm run set-webhook` then registers **one URL per bot**:
+
+```
+https://your-app.vercel.app/api/telegram?bot=111111
+https://your-app.vercel.app/api/telegram?bot=222222
+```
+
+The `bot` parameter tells the webhook which token to reply through. Subscriptions
+are stored per bot (the `BotId` column), because **a bot may only message chats
+that started that same bot** — sharing one list across bots produces
+`bot can't initiate conversation with a user` errors. The daily digest is sent to
+each bot's own subscribers, through that bot's token.
+
+`TELEGRAM_CHAT_ID` (the admin chat) is only auto-included for the **primary**
+bot, for the same reason. Long-polling mode (`npm run bot`) polls every
+configured bot in parallel.
+
+Rows written before multi-bot support have an empty `BotId` and are treated as
+belonging to the primary bot, so existing subscribers keep working.
 
 **Considering Cloudflare Workers instead?** See
 [`deploy/cloudflare.md`](deploy/cloudflare.md) for an honest comparison and a

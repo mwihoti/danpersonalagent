@@ -59,6 +59,7 @@ function toRecord(recordId, fields = {}) {
   return {
     recordId,
     chatId: normalizeChatId(fields.ChatId),
+    botId: String(fields.BotId || '').trim(),
     type: fields.Type || '',
     title: fields.Title || '',
     username: fields.Username || '',
@@ -72,6 +73,7 @@ function toRecord(recordId, fields = {}) {
 function toFields(record) {
   return {
     ChatId: normalizeChatId(record.chatId),
+    BotId: String(record.botId || '').trim(),
     Type: record.type || '',
     Title: record.title || '',
     Username: record.username || '',
@@ -80,6 +82,19 @@ function toFields(record) {
     'Subscribed At': record.subscribedAt || '',
     'Last Seen At': record.lastSeenAt || '',
   };
+}
+
+// A chat is identified by (botId, chatId): the same person messaging two bots is
+// two separate subscriptions, and each bot may only message its own.
+function sameSubscription(record, chatId, botId) {
+  if (normalizeChatId(record.chatId) !== normalizeChatId(chatId)) return false;
+  const recordBot = String(record.botId || '').trim();
+  const wantedBot = String(botId || '').trim();
+  // Records written before multi-bot support have no BotId; they belong to the
+  // primary bot, which is the only bot that existed when they were created.
+  if (!recordBot) return true;
+  if (!wantedBot) return true;
+  return recordBot === wantedBot;
 }
 
 // ─── Airtable REST helpers ────────────────────────────────────────────────────
@@ -124,16 +139,18 @@ async function airtableReadAll() {
   return records.filter((item) => item.chatId);
 }
 
-async function airtableFind(chatId) {
+async function airtableFind(chatId, botId) {
   const normalized = normalizeChatId(chatId);
   const formula = `{ChatId}="${normalized.replace(/"/g, '\\"')}"`;
   const query = new URLSearchParams({
     filterByFormula: formula,
-    maxRecords: '1',
+    // The same chat can be subscribed to several bots, so filter by chat in
+    // Airtable and pick the right bot's row here.
+    pageSize: '100',
   });
   const data = await airtableRequest('GET', `?${query.toString()}`);
-  const row = (data.records || [])[0];
-  return row ? toRecord(row.id, row.fields) : null;
+  const rows = (data.records || []).map((row) => toRecord(row.id, row.fields));
+  return rows.find((row) => sameSubscription(row, normalized, botId)) || null;
 }
 
 // ─── Local file fallback ──────────────────────────────────────────────────────
@@ -176,8 +193,8 @@ function serializeLocalWrite(task) {
 async function localUpsert(record) {
   return serializeLocalWrite(async () => {
     const records = await localReadAll();
-    const idx = records.findIndex(
-      (item) => normalizeChatId(item.chatId) === normalizeChatId(record.chatId),
+    const idx = records.findIndex((item) =>
+      sameSubscription(item, record.chatId, record.botId),
     );
     if (idx === -1) {
       records.push(record);
@@ -189,12 +206,12 @@ async function localUpsert(record) {
   });
 }
 
-async function localRemove(chatId) {
+async function localRemove(chatId, botId) {
   const normalized = normalizeChatId(chatId);
   return serializeLocalWrite(async () => {
     const records = await localReadAll();
     const next = records.filter(
-      (item) => normalizeChatId(item.chatId) !== normalized,
+      (item) => !sameSubscription(item, normalized, botId),
     );
     await localWriteAll(next);
     return next.length !== records.length;
@@ -203,16 +220,23 @@ async function localRemove(chatId) {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-async function readSubscribers() {
+// botId scopes the result to one bot's audience. Omit it to get every
+// subscription across all bots.
+async function readSubscribers(botId) {
+  let records;
   if (airtableEnabled()) {
     try {
-      return await airtableReadAll();
+      records = await airtableReadAll();
     } catch (error) {
       if (!isNetworkError(error)) throw error;
       console.warn(`  Subscribers: Airtable unavailable, reading local store (${error.message})`);
     }
   }
-  return localReadAll();
+  if (!records) records = await localReadAll();
+
+  const wanted = String(botId || '').trim();
+  if (!wanted) return records;
+  return records.filter((item) => sameSubscription(item, item.chatId, wanted));
 }
 
 async function upsertSubscriber(record) {
@@ -223,7 +247,7 @@ async function upsertSubscriber(record) {
 
   if (airtableEnabled()) {
     try {
-      const existing = await airtableFind(chatId);
+      const existing = await airtableFind(chatId, record.botId);
       const merged = {
         ...record,
         chatId,
@@ -258,13 +282,13 @@ async function upsertSubscriber(record) {
   });
 }
 
-async function removeSubscriber(chatId) {
+async function removeSubscriber(chatId, botId) {
   const normalized = normalizeChatId(chatId);
   if (!normalized) return false;
 
   if (airtableEnabled()) {
     try {
-      const existing = await airtableFind(normalized);
+      const existing = await airtableFind(normalized, botId);
       if (!existing) return false;
       await airtableRequest('DELETE', `/${existing.recordId}`);
       return true;
@@ -274,7 +298,7 @@ async function removeSubscriber(chatId) {
     }
   }
 
-  return localRemove(normalized);
+  return localRemove(normalized, botId);
 }
 
 module.exports = {
