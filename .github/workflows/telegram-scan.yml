@@ -19,6 +19,10 @@ on:
         description: 'Scan mode: default, all, goodfirst, medium'
         required: false
         default: 'default'
+      chat_id:
+        description: 'Telegram chat to notify if the scan fails (optional)'
+        required: false
+        default: ''
 
 jobs:
   scan:
@@ -57,10 +61,10 @@ jobs:
           GITHUB_REPOS: ${{ secrets.STACKS_REPOS }}
 
       - name: Tell the requester the scan failed
-        if: failure() && github.event.client_payload.chat_id != ''
+        if: failure() && (github.event.client_payload.chat_id || inputs.chat_id) != ''
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT_ID: ${{ github.event.client_payload.chat_id }}
+          CHAT_ID: ${{ github.event.client_payload.chat_id || inputs.chat_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \

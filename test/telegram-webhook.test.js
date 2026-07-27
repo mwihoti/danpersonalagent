@@ -128,15 +128,27 @@ test('/scan is handed to GitHub Actions instead of running in the request', asyn
 
       assert.equal(res.statusCode, 200);
 
+      // workflow_dispatch is preferred: it needs only Actions: write, whereas
+      // repository_dispatch needs the broader Contents: write.
       const dispatch = calls.find((c) =>
-        c.url.includes('/repos/someone/danagent/dispatches'),
+        c.url.includes(
+          '/repos/someone/danagent/actions/workflows/telegram-scan.yml/dispatches',
+        ),
       );
-      assert.ok(dispatch, 'expected a repository_dispatch call');
+      assert.ok(dispatch, 'expected a workflow_dispatch call');
 
       const payload = JSON.parse(dispatch.opts.body);
-      assert.equal(payload.event_type, 'telegram-scan');
-      assert.equal(payload.client_payload.scan_mode, 'goodfirst');
-      assert.equal(payload.client_payload.chat_id, '42');
+      assert.equal(payload.ref, 'main');
+      assert.equal(payload.inputs.scan_mode, 'goodfirst');
+      assert.equal(payload.inputs.chat_id, '42');
+
+      // The broader-permission endpoint must not be touched once the first
+      // attempt succeeds.
+      assert.equal(
+        calls.filter((c) => c.url.endsWith('/repos/someone/danagent/dispatches')).length,
+        0,
+        'repository_dispatch should not be called when workflow_dispatch works',
+      );
     });
   } finally {
     if (prevRepo === undefined) delete process.env.GITHUB_DISPATCH_REPO;
